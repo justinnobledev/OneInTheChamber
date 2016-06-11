@@ -6,6 +6,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <cstrike>
+#include <sdkhooks>
 
 #pragma newdecls required
 
@@ -14,21 +15,19 @@ ConVar g_cVersion;
 ConVar g_cKillsToWin;
 ConVar g_cKnifePunishmet;
 
-int g_iFragsOffset = -1;
-
 public Plugin myinfo = 
 {
-	name = "One in the Chamber",
-	author = PLUGIN_AUTHOR,
-	description = "One in the chamber gamemode",
-	version = PLUGIN_VERSION,
+	name = "One in the Chamber", 
+	author = PLUGIN_AUTHOR, 
+	description = "One in the chamber gamemode", 
+	version = PLUGIN_VERSION, 
 	url = "https://github.com/R3TROATTACK"
 };
 
 public void OnPluginStart()
 {
 	g_Game = GetEngineVersion();
-	if(g_Game != Engine_CSGO)
+	if (g_Game != Engine_CSGO)
 		SetFailState("This plugin is for CSGO only.");
 	
 	g_cVersion = CreateConVar("otc_version", PLUGIN_VERSION, "One in the Chambers Version do not change", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_NOTIFY | FCVAR_DONTRECORD);
@@ -37,38 +36,39 @@ public void OnPluginStart()
 	
 	AutoExecConfig(true, "OneInTheChamber");
 	
-	if(g_cKillsToWin != null)
+	if (g_cKillsToWin != null)
 		g_cKillsToWin.AddChangeHook(OTCCvarChanged);
-		
-	if((g_iFragsOffset = FindSendPropOffs("CSSPlayer", "m_iFrags")) == -1)
-		SetFailState("[OTC] Could not find offset \"m_iFrags\"");
 	
-	HookEvent("player_hurt", Event_PlayerHurtPre, EventHookMode_Pre);
 	HookEvent("player_spawn", Event_PlayerSpawnPost, EventHookMode_Post);
-	HookEvent("player_death", Event_PlayerDeath);
-	HookEvent("item_pickup", Event_ItemPickupPre, EventHookMode_Pre);
+	HookEvent("player_death", Event_PlayerDeathPre, EventHookMode_Pre);
+	HookEvent("round_start", Event_RoundStart);
 }
 
 public void OnMapStart()
 {
-	FindConVar("mp_teammates_are_enmies").SetInt(1);
+	ConVar teammatesEnmies = FindConVar("mp_teammates_are_enemies");
+	teammatesEnmies.SetInt(1);
 }
 
 public void OTCCvarChanged(ConVar convar, const char[] oldVal, const char[] newVal)
 {
-	if(g_cKillsToWin.IntValue < 1)
+	if (g_cKillsToWin.IntValue < 1)
 		g_cKillsToWin.SetInt(1);
 }
 
-public Action Event_ItemPickupPre(Event event, const char[] name, bool dontBroadcast)
+public void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
 {
-	char sItem[32];
-	event.GetString("item", sItem, 32);
-	
-	if(!StrEqual(sItem, "weapon_revolver", false) && !StrEqual(sItem, "weapon_knife", false))
-		return Plugin_Handled;
-		
-	return Plugin_Continue;
+	for (int i = 0; i < GetEntityCount(); i++)
+	{
+		if (IsValidEntity(i))
+		{
+			char classname[PLATFORM_MAX_PATH];
+			GetEntityClassname(i, classname, PLATFORM_MAX_PATH);
+			
+			if (StrEqual(classname, "func_buyzone", false))
+				AcceptEntityInput(i, "kill");
+		}
+	}
 }
 
 public void Event_PlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
@@ -77,57 +77,63 @@ public void Event_PlayerSpawnPost(Event event, const char[] name, bool dontBroad
 	
 	StripClientWeapons(client);
 	GivePlayerItem(client, "weapon_knife");
-	GivePlayerItem(client, "weapon_revolver");
+	GiveWeapon(client, "weapon_deagle");
+	
+	int weapon = GetPlayerWeaponSlot(client, CS_SLOT_SECONDARY);
+	CreateTimer(0.1, Timer_SetPlayerAmmo, weapon, TIMER_FLAG_NO_MAPCHANGE);
 }
 
-public Action Event_PlayerHurtPre(Event event, const char[] name, bool dontBroadcast)
+public Action Timer_SetPlayerAmmo(Handle Timer, int weapon)
 {
-	int victim = GetClientOfUserId(event.GetInt("userid"));
-	int attacker = GetClientOfUserId(event.GetInt("attacker"));
-	
+	if (IsValidEntity(weapon))
+	{
+		SetEntProp(weapon, Prop_Data, "m_iClip1", 1);
+		SetEntProp(weapon, Prop_Data, "m_iClip2", 0);
+	}
+}
+
+public void OnClientPostAdminCheck(int client)
+{
+	SDKHook(client, SDKHook_OnTakeDamage, Hook_OnTakeDamage);
+	SDKHook(client, SDKHook_WeaponEquip, Hook_WeaponEquip);
+	SDKHook(client, SDKHook_WeaponDrop, Hook_WeaponDrop);
+}
+
+public Action Hook_WeaponDrop(int client, int weapon)
+{
+	return Plugin_Handled;
+}
+
+public Action Hook_WeaponEquip(int client, int weapon)
+{
 	char sWeapon[32];
-	event.GetString("weapon", sWeapon, 32);
+	GetEntityClassname(weapon, sWeapon, 32);
 	
-	if(!StrEqual(sWeapon, "weapon_revolver", false) && attacker != 0 && !StrEqual(sWeapon, "weapon_knife", false))
-		return Plugin_Handled;
-	
-	if(StrEqual(sWeapon, "weapon_revolver", false))
+	if (!StrEqual(sWeapon, "weapon_deagle", false) && !StrEqual(sWeapon, "weapon_knife", false))
 	{
-		Event deathEvent = CreateEvent("player_death");
-		deathEvent.SetInt("userid", GetClientUserId(victim));
-		deathEvent.SetInt("attacker", GetClientUserId(attacker));
-		deathEvent.SetString("weapon", sWeapon);
-		deathEvent.SetBool("headshot", true);
-		deathEvent.Fire();
-		if(IsPlayerAlive(victim))
-			ForcePlayerSuicide(victim);
-			
-		//int kills = GetEntProp(attacker, Prop_Data, "m_iFrags");
-		if(GetEntData(attacker, g_iFragsOffset) >= g_cKillsToWin.IntValue)
-		{
-			if(GetClientTeam(attacker) == CS_TEAM_T)
-				CS_TerminateRound(5.0, CSRoundEnd_TerroristWin);
-			else
-				CS_TerminateRound(5.0, CSRoundEnd_CTWin);
-		}
-			
-		GiveKillAmmo(attacker);
+		AcceptEntityInput(weapon, "kill");
 		return Plugin_Handled;
 	}
-	
-	if(StrEqual(sWeapon, "weapon_knife", false))
-	{
-		GiveKillAmmo(attacker);
-		//int kills = GetEntProp(victim, Prop_Data, "m_iFrags");
-		int newFrags = GetEntData(victim, g_iFragsOffset) - 1;
-		if(newFrags >= 0)
-			SetEntData(victim, g_iFragsOffset, newFrags);
-	}
-	
 	return Plugin_Continue;
 }
 
-public void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast)
+public Action Hook_OnTakeDamage(int victim, int &attacker, int &inflictor, float &damage, int &damagetype, int &weapon, float damageForce[3], float damagePosition[3])
+{
+	char sWeapon[32];
+	GetEntityClassname(weapon, sWeapon, 32);
+	
+	if (!StrEqual(sWeapon, "weapon_deagle", false) && attacker != 0 && !StrEqual(sWeapon, "weapon_knife", false))
+		return Plugin_Handled;
+	
+	if (StrEqual(sWeapon, "weapon_deagle", false))
+	{
+		damage = 500.0;
+		return Plugin_Changed;
+	}
+	return Plugin_Continue;
+}
+
+public void Event_PlayerDeathPre(Event event, const char[] name, bool dontBroadcast)
 {
 	int victim = GetClientOfUserId(event.GetInt("userid"));
 	int attacker = GetClientOfUserId(event.GetInt("attacker"));
@@ -135,21 +141,62 @@ public void Event_PlayerDeath(Event event, const char[] name, bool dontBroadcast
 	char sWeapon[32];
 	event.GetString("weapon", sWeapon, 32);
 	
-	if(StrEqual(sWeapon, "weapon_knife", false))
+	StripClientWeapons(victim);
+	
+	if ((attacker > 0 && attacker <= MaxClients) && IsClientConnected(attacker))
+		if (IsPlayerAlive(attacker))
+			GiveKillAmmo(attacker);
+	
+	if (GetEntProp(attacker, Prop_Data, "m_iFrags") >= g_cKillsToWin.IntValue)
+	{
+		if (GetClientTeam(attacker) == CS_TEAM_T)
+			CS_TerminateRound(5.0, CSRoundEnd_TerroristWin);
+		else
+			CS_TerminateRound(5.0, CSRoundEnd_CTWin);
+	}
+	
+	if (StrEqual(sWeapon, "weapon_knife", false))
 	{
 		GiveKillAmmo(attacker);
-		//int kills = GetEntProp(victim, Prop_Data, "m_iFrags");
-		int newFrags = GetEntData(victim, g_iFragsOffset) - g_cKnifePunishmet.IntValue;
-		if(newFrags >= 0)
-			SetEntData(victim, g_iFragsOffset, newFrags);
+		int kills = GetEntProp(victim, Prop_Data, "m_iFrags");
+		int newFrags = kills - g_cKnifePunishmet.IntValue;
+		if (newFrags >= 0)
+			SetEntProp(victim, Prop_Data, "m_iFrags", newFrags);
 		else
-			SetEntData(victim, g_iFragsOffset, 0);
+			SetEntProp(victim, Prop_Data, "m_iFrags", 0);
 	}
 }
 
 stock void GiveKillAmmo(int client)
 {
-	GivePlayerAmmo(client, 1, 32, true);
+	int weapon = GetPlayerWeaponSlot(client, CS_SLOT_SECONDARY);
+	
+	char classname[32];
+	GetEntityClassname(weapon, classname, 32);
+	
+	if (!StrEqual(classname, "weapon_deagle", false))
+	{
+		RemovePlayerItem(client, weapon);
+		AcceptEntityInput(weapon, "kill");
+		weapon = GiveWeapon(client, "weapon_deagle");
+	}
+	
+	if (weapon == -1)
+		return;
+	
+	int m_iAmmo = FindDataMapOffs(client, "m_iAmmo");
+	int offset = m_iAmmo + (Weapon_GetPrimaryAmmoType(weapon) * 4); 
+	SetEntData(client, offset, 1, 4, true); 
+}
+
+stock int Weapon_GetPrimaryAmmoType(int weapon) 
+{ 
+    return GetEntProp(weapon, Prop_Data, "m_iPrimaryAmmoType"); 
+} 
+
+stock int Weapon_GetSecondaryAmmoType(int weapon)
+{
+	return GetEntProp(weapon, Prop_Data, "m_iSecondaryAmmoType");
 }
 
 stock void StripClientWeapons(int client)
@@ -164,3 +211,25 @@ stock void StripClientWeapons(int client)
 		}
 	}
 }
+
+stock int GiveWeapon(int client, const char[] weaponName)
+{
+	if (IsClientInGame(client) && (client > 0 && client <= MaxClients))
+	{
+		int weapon;
+		float pos[3];
+		GetEntPropVector(client, Prop_Send, "m_vecOrigin", pos);
+		
+		weapon = CreateEntityByName(weaponName);
+		if (weapon != -1)
+		{
+			SetEntDataEnt2(weapon, FindSendPropOffs("CBaseCombatWeapon", "m_hOwnerEntity"), client);
+			DispatchSpawn(weapon);
+			TeleportEntity(weapon, pos, NULL_VECTOR, NULL_VECTOR);
+			EquipPlayerWeapon(client, weapon);
+			SetEntPropEnt(client, Prop_Send, "m_hActiveWeapon", weapon);
+			return weapon;
+		}
+	}
+	return -1;
+} 
