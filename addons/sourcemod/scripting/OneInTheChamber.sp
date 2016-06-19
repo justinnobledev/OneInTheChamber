@@ -13,6 +13,7 @@
 EngineVersion g_Game;
 ConVar g_cVersion;
 ConVar g_cLives;
+ConVar g_cRandomSpawns;
 
 int g_iPlayerLives[MAXPLAYERS + 1];
 
@@ -37,6 +38,7 @@ public void OnPluginStart()
 	
 	g_cVersion = CreateConVar("otc_version", PLUGIN_VERSION, "One in the Chambers Version do not change", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_NOTIFY | FCVAR_DONTRECORD);
 	g_cLives = CreateConVar("otc_lives", "3", "How many lives does everyone have", FCVAR_NONE, true, 1.0);
+	g_cRandomSpawns = CreateConVar("otc_random_spawns", "1", "Use random spawns", FCVAR_NONE);
 	
 	AutoExecConfig(true, "OneInTheChamber");
 	
@@ -51,6 +53,9 @@ public void OnPluginStart()
 	
 	if (g_cLives != null)
 		g_cLives.AddChangeHook(OTCCvarChanged);
+		
+	if (g_cRandomSpawns != null)
+		g_cRandomSpawns.AddChangeHook(OTCCvarChanged);
 	
 	HookEvent("player_spawn", Event_PlayerSpawnPost, EventHookMode_Post);
 	HookEvent("player_spawn", Event_PlayerSpawnPre, EventHookMode_Pre);
@@ -63,6 +68,23 @@ public void OnMapStart()
 {
 	ConVar teammatesEnmies = FindConVar("mp_teammates_are_enemies");
 	teammatesEnmies.SetInt(1);
+}
+
+public void OnConfigsExecuted()
+{
+	ConVar spawns = FindConVar("mp_randomspawn");
+	if(g_cRandomSpawns.IntValue >= 1)
+	{
+		spawns.SetInt(1);
+		spawns = FindConVar("mp_randomspawn_los");
+		spawns.SetInt(1);
+	}
+	else
+	{
+		spawns.SetInt(0);
+		spawns = FindConVar("mp_randomspawn_los");
+		spawns.SetInt(0);
+	}
 }
 
 public void OTCCvarChanged(ConVar convar, const char[] oldVal, const char[] newVal)
